@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { 
   analyzeFridgeImage, 
   generateRecipes, 
@@ -27,6 +27,10 @@ const SpeakerIcon = () => <svg className="w-6 h-6" fill="none" stroke="currentCo
 const MicIcon = () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" /></svg>;
 const CloseIcon = () => <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>;
 const PlusIcon = () => <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>;
+const CheckIcon = () => <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>;
+const SortIcon = () => <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4h13M3 8h9m-9 4h6m4 0l4-4m0 0l4 4m-4-4v12" /></svg>;
+
+type ReviewSortOrder = 'highest' | 'lowest';
 
 const App: React.FC = () => {
   const [view, setView] = useState<'scan' | 'recipes' | 'cooking' | 'shopping'>('scan');
@@ -40,6 +44,7 @@ const App: React.FC = () => {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [location, setLocation] = useState<{lat: number, lng: number} | undefined>();
   const [isVoiceActive, setIsVoiceActive] = useState(false);
+  const [reviewSortOrder, setReviewSortOrder] = useState<ReviewSortOrder>('highest');
 
   // Refs for Voice Assistant
   const sessionPromiseRef = useRef<any>(null);
@@ -65,15 +70,22 @@ const App: React.FC = () => {
   useEffect(() => { activeStepRef.current = activeStep; }, [activeStep]);
   useEffect(() => { selectedRecipeRef.current = selectedRecipe; }, [selectedRecipe]);
 
-  // Ingredient Helper Logic
+  // Enhanced Ingredient Helper Logic
   const isIngredientMissing = useCallback((ingName: string) => {
     if (ingredients.length === 0) return true;
     const normalizedName = ingName.toLowerCase();
-    return !ingredients.some(detected => 
-      normalizedName.includes(detected.toLowerCase()) || 
-      detected.toLowerCase().includes(normalizedName)
-    );
+    return !ingredients.some(detected => {
+      const d = detected.toLowerCase();
+      return d.includes(normalizedName) || normalizedName.includes(d);
+    });
   }, [ingredients]);
+
+  const sortedReviews = useMemo(() => {
+    if (!detailedRecipe) return [];
+    return [...detailedRecipe.reviews].sort((a, b) => {
+      return reviewSortOrder === 'highest' ? b.rating - a.rating : a.rating - b.rating;
+    });
+  }, [detailedRecipe, reviewSortOrder]);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -120,6 +132,11 @@ const App: React.FC = () => {
   };
 
   const addToShoppingList = (ingredientName: string) => {
+    const alreadyExists = shoppingList.some(item => 
+      item.name.toLowerCase().includes(ingredientName.toLowerCase())
+    );
+    if (alreadyExists) return;
+
     const newItem: ShoppingItem = {
       id: Math.random().toString(36).substr(2, 9),
       name: ingredientName,
@@ -130,12 +147,17 @@ const App: React.FC = () => {
 
   const addAllMissingToShoppingList = (recipe: Recipe) => {
     const missing = recipe.ingredients.filter(ing => isIngredientMissing(ing.name));
-    const newItems = missing.map(ing => ({
-      id: Math.random().toString(36).substr(2, 9),
-      name: `${ing.amount || ''} ${ing.name}`.trim(),
-      purchased: false
-    }));
-    setShoppingList(prev => [...prev, ...newItems]);
+    const newItems = missing
+      .filter(ing => !shoppingList.some(item => item.name.toLowerCase().includes(ing.name.toLowerCase())))
+      .map(ing => ({
+        id: Math.random().toString(36).substr(2, 9),
+        name: `${ing.amount || ''} ${ing.name}`.trim(),
+        purchased: false
+      }));
+    
+    if (newItems.length > 0) {
+      setShoppingList(prev => [...prev, ...newItems]);
+    }
   };
 
   const [storeResults, setStoreResults] = useState<Record<string, StoreLocation[]>>({});
@@ -193,12 +215,9 @@ const App: React.FC = () => {
             scriptProcessor.connect(inputCtx.destination);
           },
           onmessage: async (message: LiveServerMessage) => {
-            // Handle Tool Calls
             if (message.toolCall) {
               for (const fc of message.toolCall.functionCalls) {
-                console.debug('Function call:', fc);
                 let result = "ok";
-
                 if (fc.name === 'navigateTo') {
                   const target = fc.args.view as any;
                   setView(target);
@@ -207,7 +226,6 @@ const App: React.FC = () => {
                   const action = fc.args.action as string;
                   const recipe = selectedRecipeRef.current;
                   const step = activeStepRef.current;
-
                   if (viewRef.current !== 'cooking' || !recipe) {
                     result = "Please select a recipe and start cooking first.";
                   } else {
@@ -227,7 +245,6 @@ const App: React.FC = () => {
                     }
                   }
                 }
-
                 sessionPromise.then((session) => {
                   session.sendToolResponse({
                     functionResponses: { id: fc.id, name: fc.name, response: { result } }
@@ -235,8 +252,6 @@ const App: React.FC = () => {
                 });
               }
             }
-
-            // Handle Audio Output
             const base64Audio = message.serverContent?.modelTurn?.parts[0]?.inlineData?.data;
             if (base64Audio && outputCtx) {
               nextStartTimeRef.current = Math.max(nextStartTimeRef.current, outputCtx.currentTime);
@@ -249,7 +264,6 @@ const App: React.FC = () => {
               nextStartTimeRef.current += audioBuffer.duration;
               sourcesRef.current.add(source);
             }
-
             if (message.serverContent?.interrupted) {
               for (const source of sourcesRef.current.values()) {
                 source.stop();
@@ -263,7 +277,6 @@ const App: React.FC = () => {
             stopVoiceAssistant();
           },
           onclose: () => {
-            console.debug('Live API connection closed');
             stopVoiceAssistant();
           }
         },
@@ -276,7 +289,6 @@ const App: React.FC = () => {
           systemInstruction: 'You are the "Culinary AI" voice assistant. You help users navigate the app and control cooking steps. You can navigate between "scan", "recipes", and "shopping" views. When cooking, you can go to the "next" step, "previous" step, "repeat" the current step, or "finish". Be helpful, brief, and friendly.',
         },
       });
-
       sessionPromiseRef.current = sessionPromise;
     } catch (err) {
       console.error("Failed to start voice assistant:", err);
@@ -286,12 +298,9 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col md:flex-row">
-      {/* Sidebar Filters */}
       <aside className="w-full md:w-64 bg-white border-r border-gray-200 p-6 flex-shrink-0 flex flex-col">
         <h2 className="text-2xl font-bold text-indigo-600 mb-8">Culinary AI</h2>
-        
         <div className="flex-1 space-y-6 overflow-y-auto">
-          {/* Voice Assistant Toggle */}
           <div className="p-4 bg-indigo-50 rounded-2xl border border-indigo-100">
             <div className="flex items-center justify-between mb-2">
               <span className="text-xs font-bold text-indigo-700 uppercase">Voice Control</span>
@@ -309,9 +318,7 @@ const App: React.FC = () => {
               <MicIcon />
               <span>{isVoiceActive ? 'Stop Assistant' : 'Start Assistant'}</span>
             </button>
-            <p className="mt-2 text-[10px] text-indigo-400 text-center italic">"Go to shopping list", "Next step"</p>
           </div>
-
           <div>
             <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">Navigation</h3>
             <nav className="space-y-2">
@@ -326,7 +333,6 @@ const App: React.FC = () => {
               </button>
             </nav>
           </div>
-
           <div>
             <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">Dietary Filters</h3>
             <div className="space-y-2">
@@ -346,7 +352,6 @@ const App: React.FC = () => {
         </div>
       </aside>
 
-      {/* Main Content Area */}
       <main className="flex-1 p-4 md:p-8 overflow-y-auto max-h-screen">
         {view === 'scan' && (
           <div className="max-w-2xl mx-auto mt-12 text-center">
@@ -356,12 +361,10 @@ const App: React.FC = () => {
               </div>
               <h1 className="text-3xl font-bold mb-4">Snap Your Fridge</h1>
               <p className="text-gray-500 mb-8">Take a photo of your open fridge and we'll tell you what's inside and what you can cook!</p>
-              
               <label className="cursor-pointer inline-flex items-center px-8 py-4 bg-indigo-600 text-white rounded-xl font-semibold shadow-lg hover:bg-indigo-700 transition transform hover:scale-105 active:scale-95">
                 <span>{isAnalyzing ? "Analyzing..." : "Upload Photo"}</span>
                 <input type="file" accept="image/*" className="hidden" onChange={handleFileUpload} disabled={isAnalyzing} />
               </label>
-
               {ingredients.length > 0 && (
                 <div className="mt-12 text-left">
                   <h3 className="font-semibold text-gray-700 mb-3">Detected Ingredients:</h3>
@@ -393,97 +396,89 @@ const App: React.FC = () => {
                 <span>{isAnalyzing ? "Updating..." : "Refresh Recipes"}</span>
               </button>
             </header>
-
-            {isAnalyzing && (
+            {isAnalyzing ? (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
                 {[1,2,3].map(i => (
                   <div key={i} className="bg-white rounded-2xl h-96 animate-pulse border border-gray-100" />
                 ))}
               </div>
-            )}
-
-            {!isAnalyzing && recipes.length > 0 && (
+            ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-                {recipes.map(recipe => (
-                  <div key={recipe.id} className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden hover:shadow-xl transition flex flex-col">
-                    <img src={`https://picsum.photos/seed/${recipe.id}/400/250`} alt={recipe.title} className="w-full h-48 object-cover" />
-                    <div className="p-6 flex-1 flex flex-col">
-                      <div className="flex justify-between items-start mb-2">
-                        <h3 className="text-xl font-bold">{recipe.title}</h3>
-                        <span className={`px-2 py-1 rounded text-xs font-bold ${recipe.difficulty === 'Easy' ? 'bg-green-100 text-green-700' : recipe.difficulty === 'Medium' ? 'bg-yellow-100 text-yellow-700' : 'bg-red-100 text-red-700'}`}>
-                          {recipe.difficulty}
-                        </span>
+                {recipes.map(recipe => {
+                  const missingCount = recipe.ingredients.filter(ing => isIngredientMissing(ing.name)).length;
+                  return (
+                    <div key={recipe.id} className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden hover:shadow-xl transition flex flex-col group">
+                      <div className="relative overflow-hidden">
+                        <img src={`https://picsum.photos/seed/${recipe.id}/400/250`} alt={recipe.title} className="w-full h-48 object-cover group-hover:scale-105 transition duration-500" />
+                        {missingCount > 0 && (
+                          <div className="absolute top-4 left-4 bg-orange-500 text-white text-[10px] font-bold px-2 py-1 rounded-full shadow-lg">
+                            {missingCount} Items Missing
+                          </div>
+                        )}
                       </div>
-                      <p className="text-gray-600 text-sm mb-4 line-clamp-2">{recipe.description}</p>
-                      
-                      <div className="mt-auto grid grid-cols-2 gap-4 text-sm text-gray-500 border-t border-gray-50 pt-4 mb-6">
-                        <div className="flex items-center space-x-1">
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                          <span>{recipe.prepTime}</span>
+                      <div className="p-6 flex-1 flex flex-col">
+                        <div className="flex justify-between items-start mb-2">
+                          <h3 className="text-xl font-bold">{recipe.title}</h3>
+                          <span className={`px-2 py-1 rounded text-xs font-bold ${recipe.difficulty === 'Easy' ? 'bg-green-100 text-green-700' : recipe.difficulty === 'Medium' ? 'bg-yellow-100 text-yellow-700' : 'bg-red-100 text-red-700'}`}>
+                            {recipe.difficulty}
+                          </span>
                         </div>
-                        <div className="flex items-center space-x-1">
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" /></svg>
-                          <span>{recipe.calories} kcal</span>
+                        <p className="text-gray-600 text-sm mb-4 line-clamp-2">{recipe.description}</p>
+                        <div className="mt-auto grid grid-cols-2 gap-4 text-sm text-gray-500 border-t border-gray-50 pt-4 mb-6">
+                          <div className="flex items-center space-x-1">
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                            <span>{recipe.prepTime}</span>
+                          </div>
+                          <div className="flex items-center space-x-1">
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" /></svg>
+                            <span>{recipe.calories} kcal</span>
+                          </div>
                         </div>
-                      </div>
-
-                      <div className="flex space-x-2">
-                        <button 
-                          onClick={() => setDetailedRecipe(recipe)}
-                          className="flex-1 py-3 bg-gray-100 text-gray-700 rounded-xl font-semibold hover:bg-gray-200 transition"
-                        >
-                          Details
-                        </button>
-                        <button 
-                          onClick={() => startCooking(recipe)}
-                          className="flex-[2] py-3 bg-indigo-600 text-white rounded-xl font-semibold hover:bg-indigo-700 transition"
-                        >
-                          Start Cooking
-                        </button>
+                        <div className="flex space-x-2">
+                          <button onClick={() => setDetailedRecipe(recipe)} className="flex-1 py-3 bg-gray-100 text-gray-700 rounded-xl font-semibold hover:bg-gray-200 transition">Details</button>
+                          <button onClick={() => startCooking(recipe)} className="flex-[2] py-3 bg-indigo-600 text-white rounded-xl font-semibold hover:bg-indigo-700 transition">Start Cooking</button>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
         )}
 
-        {/* Recipe Details Modal */}
         {detailedRecipe && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black bg-opacity-50 backdrop-blur-sm">
-            <div className="bg-white rounded-3xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-y-auto relative animate-in fade-in zoom-in duration-300">
-              <button 
-                onClick={() => setDetailedRecipe(null)}
-                className="absolute top-6 right-6 p-2 bg-white rounded-full shadow-md text-gray-500 hover:text-red-500 transition z-10"
-              >
+            <div className="bg-white rounded-3xl shadow-2xl w-full max-w-5xl max-h-[90vh] overflow-y-auto relative animate-in fade-in zoom-in duration-300">
+              <button onClick={() => setDetailedRecipe(null)} className="absolute top-6 right-6 p-2 bg-white rounded-full shadow-md text-gray-500 hover:text-red-500 transition z-10">
                 <CloseIcon />
               </button>
-              
               <div className="grid grid-cols-1 md:grid-cols-2">
-                <div className="relative h-64 md:h-full">
-                   <img 
-                    src={`https://picsum.photos/seed/${detailedRecipe.id}/600/600`} 
-                    alt={detailedRecipe.title} 
-                    className="w-full h-full object-cover" 
-                  />
-                  <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent flex items-end p-8 md:hidden">
-                    <h2 className="text-3xl font-bold text-white">{detailedRecipe.title}</h2>
-                  </div>
+                <div className="relative h-64 md:h-auto">
+                   <img src={`https://picsum.photos/seed/${detailedRecipe.id}/800/800`} alt={detailedRecipe.title} className="w-full h-full object-cover" />
                 </div>
-                
                 <div className="p-8 md:p-12">
-                  <div className="hidden md:block">
-                    <div className="flex items-center space-x-2 mb-4">
-                      {detailedRecipe.dietaryInfo.map(info => (
-                        <span key={info} className="px-3 py-1 bg-indigo-50 text-indigo-600 text-xs font-bold rounded-full">{info}</span>
-                      ))}
-                    </div>
-                    <h2 className="text-3xl font-bold text-gray-900 mb-4">{detailedRecipe.title}</h2>
+                  <div className="flex items-center space-x-2 mb-4">
+                    {detailedRecipe.dietaryInfo.map(info => (
+                      <span key={info} className="px-3 py-1 bg-indigo-50 text-indigo-600 text-xs font-bold rounded-full">{info}</span>
+                    ))}
                   </div>
-                  
+                  <h2 className="text-3xl font-bold text-gray-900 mb-4">{detailedRecipe.title}</h2>
                   <p className="text-gray-600 mb-8 leading-relaxed">{detailedRecipe.description}</p>
                   
+                  {detailedRecipe.ingredients.some(ing => isIngredientMissing(ing.name)) && (
+                    <div className="mb-8 p-4 bg-orange-50 border border-orange-100 rounded-2xl flex items-start space-x-3">
+                      <div className="mt-1 bg-orange-400 p-1.5 rounded-full text-white"><ShopIcon /></div>
+                      <div className="flex-1">
+                        <p className="text-sm font-bold text-orange-800">Ingredients Missing</p>
+                        <p className="text-xs text-orange-700 mb-3">Add items to your shopping list.</p>
+                        <button onClick={() => addAllMissingToShoppingList(detailedRecipe)} className="bg-orange-600 text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-orange-700 transition shadow-sm flex items-center space-x-2">
+                          <PlusIcon /> <span>Add All Missing</span>
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
                   <div className="grid grid-cols-2 gap-4 mb-8">
                     <div className="bg-gray-50 p-4 rounded-2xl border border-gray-100">
                       <span className="block text-xs font-bold text-gray-400 uppercase tracking-widest mb-1">Calories</span>
@@ -495,35 +490,23 @@ const App: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* Enhanced Ingredient List with Missing Items */}
                   <div className="mb-8">
-                    <div className="flex items-center justify-between mb-4">
-                      <h3 className="font-bold text-gray-900">Ingredients</h3>
-                      <button 
-                        onClick={() => addAllMissingToShoppingList(detailedRecipe)}
-                        className="text-xs font-bold text-indigo-600 hover:text-indigo-700 flex items-center space-x-1"
-                      >
-                        <PlusIcon /> <span>Add Missing to List</span>
-                      </button>
-                    </div>
+                    <h3 className="font-bold text-gray-900 mb-4">Ingredients</h3>
                     <div className="space-y-2">
                       {detailedRecipe.ingredients.map((ing, i) => {
                         const missing = isIngredientMissing(ing.name);
+                        const inList = shoppingList.some(item => item.name.toLowerCase().includes(ing.name.toLowerCase()));
                         return (
-                          <div key={i} className={`flex items-center justify-between p-3 rounded-xl border transition ${missing ? 'bg-orange-50 border-orange-100' : 'bg-white border-gray-100'}`}>
+                          <div key={i} className={`flex items-center justify-between p-3 rounded-xl border transition ${missing ? 'bg-orange-50/50 border-orange-100 shadow-sm' : 'bg-white border-gray-100'}`}>
                             <div className="flex items-center space-x-3">
                               <span className={`w-2 h-2 rounded-full ${missing ? 'bg-orange-400' : 'bg-green-400'}`} />
-                              <span className={`text-sm ${missing ? 'text-orange-900 font-medium' : 'text-gray-700'}`}>
-                                {ing.amount} {ing.name}
-                              </span>
+                              <div className="flex flex-col">
+                                <span className={`text-sm ${missing ? 'text-orange-900 font-bold' : 'text-gray-700'}`}>{ing.amount} {ing.name}</span>
+                              </div>
                             </div>
                             {missing && (
-                              <button 
-                                onClick={() => addToShoppingList(ing.name)}
-                                className="p-1.5 text-orange-600 hover:bg-orange-100 rounded-lg"
-                                title="Add to shopping list"
-                              >
-                                <ShopIcon />
+                              <button onClick={() => addToShoppingList(ing.name)} className={`p-2 rounded-lg transition shadow-sm ${inList ? 'bg-green-100 text-green-600' : 'bg-orange-100 text-orange-600 hover:bg-orange-200'}`} disabled={inList}>
+                                {inList ? <CheckIcon /> : <PlusIcon />}
                               </button>
                             )}
                           </div>
@@ -532,45 +515,49 @@ const App: React.FC = () => {
                     </div>
                   </div>
 
-                  <h3 className="font-bold text-gray-900 mb-4 text-sm">Nutritional Facts</h3>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-8">
-                    <div className="text-center p-3 bg-green-50 rounded-xl">
-                      <span className="block text-[10px] font-bold text-green-600 uppercase">Protein</span>
-                      <span className="text-sm font-bold text-green-900">{detailedRecipe.nutritionalFacts.protein}</span>
-                    </div>
-                    <div className="text-center p-3 bg-blue-50 rounded-xl">
-                      <span className="block text-[10px] font-bold text-blue-600 uppercase">Carbs</span>
-                      <span className="text-sm font-bold text-blue-900">{detailedRecipe.nutritionalFacts.carbs}</span>
-                    </div>
-                    <div className="text-center p-3 bg-yellow-50 rounded-xl">
-                      <span className="block text-[10px] font-bold text-yellow-600 uppercase">Fat</span>
-                      <span className="text-sm font-bold text-yellow-900">{detailedRecipe.nutritionalFacts.fat}</span>
-                    </div>
-                    <div className="text-center p-3 bg-purple-50 rounded-xl">
-                      <span className="block text-[10px] font-bold text-purple-600 uppercase">Fiber</span>
-                      <span className="text-sm font-bold text-purple-900">{detailedRecipe.nutritionalFacts.fiber}</span>
-                    </div>
-                  </div>
-
-                  <h3 className="font-bold text-gray-900 mb-4 text-sm">What Users Say</h3>
-                  <div className="space-y-3 mb-10">
-                    {detailedRecipe.reviews.map((review, i) => (
-                      <div key={i} className="bg-gray-50 p-3 rounded-2xl border border-gray-50">
-                        <div className="flex justify-between items-center mb-1">
-                          <span className="text-xs font-bold text-gray-800">{review.user}</span>
-                          <span className="text-yellow-500 text-[10px]">{'★'.repeat(review.rating)}{'☆'.repeat(5-review.rating)}</span>
-                        </div>
-                        <p className="text-[11px] text-gray-500 italic">"{review.comment}"</p>
+                  <div className="mb-10 p-6 bg-indigo-50/30 rounded-3xl border border-indigo-50">
+                    <div className="flex items-center justify-between mb-6">
+                      <h3 className="font-bold text-gray-900 flex items-center space-x-2">
+                        <span>User Reviews</span>
+                        <span className="bg-indigo-100 text-indigo-700 text-[10px] px-2 py-0.5 rounded-full">{detailedRecipe.reviews.length}</span>
+                      </h3>
+                      <div className="flex items-center space-x-2 text-xs">
+                        <span className="text-gray-500 flex items-center space-x-1"><SortIcon /> <span>Sort:</span></span>
+                        <select 
+                          value={reviewSortOrder}
+                          onChange={(e) => setReviewSortOrder(e.target.value as ReviewSortOrder)}
+                          className="bg-white border border-gray-200 rounded-lg px-2 py-1 outline-none text-gray-700 font-medium cursor-pointer"
+                        >
+                          <option value="highest">Highest Rated</option>
+                          <option value="lowest">Lowest Rated</option>
+                        </select>
                       </div>
-                    ))}
+                    </div>
+                    <div className="space-y-4">
+                      {sortedReviews.map((review, i) => (
+                        <div key={i} className="bg-white p-4 rounded-2xl border border-gray-100 shadow-sm">
+                          <div className="flex justify-between items-center mb-2">
+                            <div className="flex items-center space-x-2">
+                              <div className="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-600 text-xs font-bold">
+                                {review.user.charAt(0)}
+                              </div>
+                              <span className="text-sm font-bold text-gray-800">{review.user}</span>
+                            </div>
+                            <div className="flex items-center space-x-0.5">
+                              {[...Array(5)].map((_, idx) => (
+                                <svg key={idx} className={`w-3 h-3 ${idx < review.rating ? 'text-yellow-400' : 'text-gray-200'}`} fill="currentColor" viewBox="0 0 20 20">
+                                  <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+                                </svg>
+                              ))}
+                            </div>
+                          </div>
+                          <p className="text-xs text-gray-600 leading-relaxed italic">"{review.comment}"</p>
+                        </div>
+                      ))}
+                    </div>
                   </div>
 
-                  <button 
-                    onClick={() => startCooking(detailedRecipe)}
-                    className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold shadow-lg hover:bg-indigo-700 transition transform active:scale-95"
-                  >
-                    Start Cooking
-                  </button>
+                  <button onClick={() => startCooking(detailedRecipe)} className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold shadow-lg hover:bg-indigo-700 transition transform active:scale-95">Start Cooking</button>
                 </div>
               </div>
             </div>
@@ -594,40 +581,35 @@ const App: React.FC = () => {
                 </div>
               </div>
             </header>
-
             <div className="flex-1 p-8 md:p-12 flex flex-col justify-center text-center">
               <div className="mb-8">
                 <div className="inline-block px-4 py-1 bg-indigo-50 text-indigo-600 rounded-full text-xs font-bold uppercase tracking-wider mb-4">Current Instruction</div>
-                <p className="text-3xl md:text-4xl font-semibold leading-tight text-gray-800">
-                  {selectedRecipe.instructions[activeStep]}
-                </p>
+                <p className="text-3xl md:text-4xl font-semibold leading-tight text-gray-800">{selectedRecipe.instructions[activeStep]}</p>
               </div>
-
               <div className="mt-12 text-left bg-gray-50 rounded-2xl p-6 border border-gray-100">
                 <h3 className="text-lg font-bold mb-4 flex justify-between items-center">
-                  <span>Recipe Ingredients</span>
-                  <button 
-                    onClick={() => addAllMissingToShoppingList(selectedRecipe)}
-                    className="text-xs font-bold text-indigo-600 flex items-center space-x-1 bg-indigo-50 px-3 py-1.5 rounded-lg hover:bg-indigo-100 transition"
-                  >
-                    <PlusIcon /> <span>Add Missing to List</span>
-                  </button>
+                  <span>Ingredients Needed</span>
+                  {selectedRecipe.ingredients.some(ing => isIngredientMissing(ing.name)) && (
+                    <button onClick={() => addAllMissingToShoppingList(selectedRecipe)} className="text-xs font-bold text-orange-600 flex items-center space-x-1 bg-orange-100 px-3 py-1.5 rounded-lg hover:bg-orange-200 transition">
+                      <PlusIcon /> <span>Add Missing</span>
+                    </button>
+                  )}
                 </h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   {selectedRecipe.ingredients.map((ing, i) => {
                     const missing = isIngredientMissing(ing.name);
+                    const inList = shoppingList.some(item => item.name.toLowerCase().includes(ing.name.toLowerCase()));
                     return (
                       <div key={i} className={`flex items-center justify-between p-3 rounded-xl shadow-sm group transition ${missing ? 'bg-orange-50 border border-orange-100' : 'bg-white border border-gray-100'}`}>
                         <div className="flex items-center space-x-3">
                            <span className={`w-2 h-2 rounded-full ${missing ? 'bg-orange-400' : 'bg-green-400'}`} />
-                           <span className={`text-sm ${missing ? 'text-orange-900 font-medium' : 'text-gray-700'}`}>{ing.amount} {ing.name}</span>
+                           <div className="flex flex-col">
+                             <span className={`text-sm ${missing ? 'text-orange-900 font-bold' : 'text-gray-700'}`}>{ing.amount} {ing.name}</span>
+                             {missing && <span className="text-[10px] text-orange-500 font-bold">MISSING</span>}
+                           </div>
                         </div>
-                        <button 
-                          onClick={() => addToShoppingList(ing.name)}
-                          className={`p-2 rounded-lg transition ${missing ? 'text-orange-600 bg-orange-100' : 'text-indigo-600 hover:bg-indigo-50 opacity-0 group-hover:opacity-100'}`}
-                          title="Add to shopping list"
-                        >
-                          <ShopIcon />
+                        <button onClick={() => addToShoppingList(ing.name)} className={`p-2 rounded-lg transition ${missing ? (inList ? 'bg-green-100 text-green-600' : 'bg-orange-100 text-orange-600') : 'text-indigo-600 hover:bg-indigo-50 opacity-0 group-hover:opacity-100'}`} disabled={inList}>
+                          {inList ? <CheckIcon /> : <ShopIcon />}
                         </button>
                       </div>
                     );
@@ -635,40 +617,15 @@ const App: React.FC = () => {
                 </div>
               </div>
             </div>
-
             <footer className="p-8 border-t border-gray-100 bg-gray-50 flex justify-between items-center">
-              <button 
-                disabled={activeStep === 0}
-                onClick={() => setActiveStep(prev => prev - 1)}
-                className={`px-8 py-3 rounded-xl font-bold transition ${activeStep === 0 ? 'bg-gray-200 text-gray-400' : 'bg-white text-gray-700 border border-gray-200 hover:bg-gray-100'}`}
-              >
-                Previous Step
-              </button>
-              
+              <button disabled={activeStep === 0} onClick={() => setActiveStep(prev => prev - 1)} className={`px-8 py-3 rounded-xl font-bold transition ${activeStep === 0 ? 'bg-gray-200 text-gray-400' : 'bg-white text-gray-700 border border-gray-200 hover:bg-gray-100'}`}>Previous</button>
               <div className="flex space-x-2">
-                {selectedRecipe.instructions.map((_, i) => (
-                  <div key={i} className={`h-2 w-2 rounded-full ${i === activeStep ? 'bg-indigo-600 w-4' : 'bg-gray-300'}`} />
-                ))}
+                {selectedRecipe.instructions.map((_, i) => <div key={i} className={`h-2 w-2 rounded-full ${i === activeStep ? 'bg-indigo-600 w-4' : 'bg-gray-300'}`} />)}
               </div>
-
               {activeStep === selectedRecipe.instructions.length - 1 ? (
-                <button 
-                  onClick={() => setView('recipes')}
-                  className="px-8 py-3 bg-green-600 text-white rounded-xl font-bold hover:bg-green-700 transition shadow-lg"
-                >
-                  Finish Cooking!
-                </button>
+                <button onClick={() => setView('recipes')} className="px-8 py-3 bg-green-600 text-white rounded-xl font-bold hover:bg-green-700 transition shadow-lg">Finish!</button>
               ) : (
-                <button 
-                  onClick={() => {
-                    const next = activeStep + 1;
-                    setActiveStep(next);
-                    speak(`Step ${next + 1}: ${selectedRecipe.instructions[next]}`);
-                  }}
-                  className="px-8 py-3 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 transition shadow-lg"
-                >
-                  Next Step
-                </button>
+                <button onClick={() => { const next = activeStep + 1; setActiveStep(next); speak(`Step ${next + 1}: ${selectedRecipe.instructions[next]}`); }} className="px-8 py-3 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 transition shadow-lg">Next Step</button>
               )}
             </footer>
           </div>
@@ -676,58 +633,28 @@ const App: React.FC = () => {
 
         {view === 'shopping' && (
           <div className="max-w-4xl mx-auto">
-            <header className="mb-10">
-              <h1 className="text-4xl font-bold mb-2">Shopping List</h1>
-              <p className="text-gray-500">Items you need to pick up for your next meal.</p>
-            </header>
-
+            <header className="mb-10"><h1 className="text-4xl font-bold mb-2">Shopping List</h1></header>
             <div className="bg-white rounded-2xl shadow-sm border border-gray-100 divide-y divide-gray-50">
               {shoppingList.length === 0 ? (
-                <div className="p-12 text-center text-gray-400">
-                  <div className="mb-4 flex justify-center"><ShopIcon /></div>
-                  Your shopping list is empty. Add items from a recipe!
-                </div>
+                <div className="p-12 text-center text-gray-400"><div className="mb-4 flex justify-center"><ShopIcon /></div>Empty list! Add items from recipes.</div>
               ) : (
                 shoppingList.map((item) => (
                   <div key={item.id} className="p-6">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center space-x-4">
-                        <input 
-                          type="checkbox" 
-                          checked={item.purchased}
-                          onChange={() => setShoppingList(prev => prev.map(i => i.id === item.id ? {...i, purchased: !i.purchased} : i))}
-                          className="h-6 w-6 text-indigo-600 rounded-lg"
-                        />
+                        <input type="checkbox" checked={item.purchased} onChange={() => setShoppingList(prev => prev.map(i => i.id === item.id ? {...i, purchased: !i.purchased} : i))} className="h-6 w-6 text-indigo-600 rounded-lg" />
                         <span className={`text-xl ${item.purchased ? 'line-through text-gray-300' : 'text-gray-800'}`}>{item.name}</span>
                       </div>
                       <div className="flex space-x-3">
-                        <button 
-                          onClick={() => findStore(item.name)}
-                          className="px-4 py-2 text-sm font-semibold text-indigo-600 bg-indigo-50 rounded-lg hover:bg-indigo-100 transition"
-                        >
-                          Find Nearby Stores
-                        </button>
-                        <button 
-                          onClick={() => setShoppingList(prev => prev.filter(i => i.id !== item.id))}
-                          className="p-2 text-gray-300 hover:text-red-500 transition"
-                        >
-                          <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
-                        </button>
+                        <button onClick={() => findStore(item.name)} className="px-4 py-2 text-sm font-semibold text-indigo-600 bg-indigo-50 rounded-lg hover:bg-indigo-100 transition">Find Stores</button>
+                        <button onClick={() => setShoppingList(prev => prev.filter(i => i.id !== item.id))} className="p-2 text-gray-300 hover:text-red-500 transition"><svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg></button>
                       </div>
                     </div>
-
                     {storeResults[item.name] && (
                       <div className="mt-4 ml-10 p-4 bg-gray-50 rounded-xl border border-gray-100">
-                        <h4 className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-3">Nearby Options (via Google Maps)</h4>
                         <div className="flex flex-wrap gap-4">
                           {storeResults[item.name].map((store, si) => (
-                            <a 
-                              key={si} 
-                              href={store.uri} 
-                              target="_blank" 
-                              rel="noopener noreferrer"
-                              className="bg-white px-4 py-2 rounded-lg shadow-sm border border-gray-100 hover:border-indigo-300 transition flex items-center space-x-2"
-                            >
+                            <a key={si} href={store.uri} target="_blank" rel="noopener noreferrer" className="bg-white px-4 py-2 rounded-lg shadow-sm border border-gray-100 hover:border-indigo-300 transition flex items-center space-x-2">
                               <svg className="w-4 h-4 text-red-500" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5a2.5 2.5 0 110-5 2.5 2.5 0 010 5z"/></svg>
                               <span className="text-sm font-medium">{store.name}</span>
                             </a>
